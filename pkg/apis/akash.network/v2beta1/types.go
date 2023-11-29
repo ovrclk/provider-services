@@ -317,12 +317,13 @@ type ManifestServiceExpose struct {
 }
 
 type ManifestServiceExposeHTTPOptions struct {
-	MaxBodySize uint32   `json:"max_body_size,omitempty"`
-	ReadTimeout uint32   `json:"read_timeout,omitempty"`
-	SendTimeout uint32   `json:"send_timeout,omitempty"`
-	NextTries   uint32   `json:"next_tries,omitempty"`
-	NextTimeout uint32   `json:"next_timeout,omitempty"`
-	NextCases   []string `json:"next_cases,omitempty"`
+	MaxBodySize    uint32   `json:"max_body_size,omitempty"`
+	ReadTimeout    uint32   `json:"read_timeout,omitempty"`
+	SendTimeout    uint32   `json:"send_timeout,omitempty"`
+	NextTries      uint32   `json:"next_tries,omitempty"`
+	NextTimeout    uint32   `json:"next_timeout,omitempty"`
+	NextCases      []string `json:"next_cases,omitempty"`
+	SslPassthrough bool     `json:"ssl_passthrough,omitempty"`
 }
 
 func (mse ManifestServiceExpose) toAkash() (maniv2beta1.ServiceExpose, error) {
@@ -346,6 +347,7 @@ func (mse ManifestServiceExpose) toAkash() (maniv2beta1.ServiceExpose, error) {
 			NextTries:   mse.HTTPOptions.NextTries,
 			NextTimeout: mse.HTTPOptions.NextTimeout,
 			NextCases:   mse.HTTPOptions.NextCases,
+			// SslPassthrough: mse.HTTPOptions.SslPassthrough, //Needs to be added to maniv2beta1.ServiceExposeHTTPOptions
 		},
 	}, nil
 }
@@ -374,6 +376,7 @@ func manifestServiceExposeFromAkash(amse maniv2beta1.ServiceExpose) ManifestServ
 			NextTries:   amse.HTTPOptions.NextTries,
 			NextTimeout: amse.HTTPOptions.NextTimeout,
 			NextCases:   amse.HTTPOptions.NextCases,
+			// SslPassthrough: amse.HTTPOptions.SslPassthrough, Needs to be added.
 		},
 	}
 }
