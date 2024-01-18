@@ -389,7 +389,7 @@ func (op *hostnameOperator) applyAddOrUpdateEvent(ctx context.Context, ev ctypes
 		if shouldConnect {
 			op.log.Debug("Updating ingress")
 			// Update or create the existing ingress
-			err = op.client.ConnectHostnameToDeployment(ctx, directive)
+			err = op.client.ConnectHostnameToDeployment(ctx, directive, op.isSslEnabled())
 		}
 	} else {
 		op.log.Debug("Swapping ingress to new deployment")
@@ -398,7 +398,7 @@ func (op *hostnameOperator) applyAddOrUpdateEvent(ctx context.Context, ev ctypes
 		if err == nil {
 			// Remove the current entry, if the next action succeeds then it gets inserted below
 			delete(op.hostnames, ev.GetHostname())
-			err = op.client.ConnectHostnameToDeployment(ctx, directive)
+			err = op.client.ConnectHostnameToDeployment(ctx, directive, op.isSslEnabled())
 		}
 	}
 
@@ -445,7 +445,7 @@ func doHostnameOperator(cmd *cobra.Command) error {
 	logger := operatorcommon.OpenLogger().With("op", "hostname")
 	logger.Info("HTTP listening", "address", listenAddr)
 
-	client, err := clusterClient.NewClient(cmd.Context(), logger, ns, configPath)
+	client, err := clusterClient.NewClient(cmd.Context(), logger, ns, configPath, config.ClientConfig)
 	if err != nil {
 		return err
 	}
@@ -501,4 +501,8 @@ func Cmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+func (op *hostnameOperator) isSslEnabled() bool {
+	return op.cfg.ClientConfig.Ssl != clusterClient.Ssl{}
 }

@@ -24,12 +24,13 @@ import (
 
 const (
 	akashIngressClassName = "akash-ingress-class"
+	root                  = "nginx.ingress.kubernetes.io"
+	certManager           = "cert-manager.io"
 )
 
-func kubeNginxIngressAnnotations(directive ctypes.ConnectHostnameToDeploymentDirective) map[string]string {
+func (c *client) kubeNginxIngressAnnotations(directive ctypes.ConnectHostnameToDeploymentDirective) map[string]string {
 	// For kubernetes/ingress-nginx
 	// https://github.com/kubernetes/ingress-nginx
-	const root = "nginx.ingress.kubernetes.io"
 
 	readTimeout := math.Ceil(float64(directive.ReadTimeout) / 1000.0)
 	sendTimeout := math.Ceil(float64(directive.SendTimeout) / 1000.0)
@@ -66,11 +67,20 @@ func kubeNginxIngressAnnotations(directive ctypes.ConnectHostnameToDeploymentDir
 		}
 	}
 
+	switch c.cfg.Ssl.IssuerType {
+	case clusterIssuer:
+		result[fmt.Sprintf("%s/cluster-issuer", certManager)] = c.cfg.Ssl.IssuerName
+		break
+	case issuer:
+		result[fmt.Sprintf("%s/issuer", certManager)] = c.cfg.Ssl.IssuerName
+		break
+	}
+
 	result[fmt.Sprintf("%s/proxy-next-upstream", root)] = strBuilder.String()
 	return result
 }
 
-func (c *client) ConnectHostnameToDeployment(ctx context.Context, directive ctypes.ConnectHostnameToDeploymentDirective) error {
+func (c *client) ConnectHostnameToDeployment(ctx context.Context, directive ctypes.ConnectHostnameToDeploymentDirective, tlsEnabled bool) error {
 	ingressName := directive.Hostname
 	ns := builder.LidNS(directive.LeaseID)
 	rules := ingressRules(directive.Hostname, directive.ServiceName, directive.ServicePort)
@@ -82,16 +92,27 @@ func (c *client) ConnectHostnameToDeployment(ctx context.Context, directive ctyp
 	labels[builder.AkashManagedLabelName] = "true"
 	builder.AppendLeaseLabels(directive.LeaseID, labels)
 
+	var tls []netv1.IngressTLS
+	if tlsEnabled {
+		tls = []netv1.IngressTLS{
+			{
+				Hosts:      []string{directive.Hostname},
+				SecretName: fmt.Sprintf("%s-tls", ingressName),
+			},
+		}
+	}
+
 	ingressClassName := akashIngressClassName
 	obj := &netv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        ingressName,
 			Labels:      labels,
-			Annotations: kubeNginxIngressAnnotations(directive),
+			Annotations: c.kubeNginxIngressAnnotations(directive),
 		},
 		Spec: netv1.IngressSpec{
 			IngressClassName: &ingressClassName,
 			Rules:            rules,
+			TLS:              tls,
 		},
 	}
 
