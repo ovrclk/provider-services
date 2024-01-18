@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+        "os"
 
 	netv1 "k8s.io/api/networking/v1"
 	kubeErrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,9 +23,17 @@ import (
 	ctypes "github.com/akash-network/provider/cluster/types/v1beta3"
 )
 
-const (
-	akashIngressClassName = "akash-ingress-class"
+var (
+	akashIngressClassName = getIngressClassName()
 )
+
+func getIngressClassName() string {
+	val := os.Getenv("AKASH_INGRESS_CLASS_NAME")
+	if val != "" {
+		return val
+	}
+	return "akash-ingress-class"
+}
 
 func kubeNginxIngressAnnotations(directive ctypes.ConnectHostnameToDeploymentDirective) map[string]string {
 	// For kubernetes/ingress-nginx
