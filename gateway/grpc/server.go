@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -8,70 +9,50 @@ import (
 	"time"
 
 	atls "github.com/akash-network/akash-api/go/util/tls"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
-	"google.golang.org/protobuf/types/known/emptypb"
-
-	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/akash-network/akash-api/go/grpc/gogoreflection"
 	ctypes "github.com/akash-network/akash-api/go/node/cert/v1beta3"
+	leasev1 "github.com/akash-network/akash-api/go/provider/lease/v1"
 	providerv1 "github.com/akash-network/akash-api/go/provider/v1"
 
 	"github.com/akash-network/provider"
+	"github.com/akash-network/provider/cluster"
+	"github.com/akash-network/provider/cluster/types/v1beta3/clients/ip"
 	"github.com/akash-network/provider/tools/fromctx"
-	ptypes "github.com/akash-network/provider/types"
 )
 
-type ContextKey string
-
-const (
-	ContextKeyQueryClient = ContextKey("query-client")
-	ContextKeyOwner       = ContextKey("owner")
+var (
+	_ providerv1.ProviderRPCServer = (*server)(nil)
+	_ leasev1.LeaseRPCServer       = (*server)(nil)
+	_ Server                       = (*grpcServer)(nil)
 )
 
-type grpcProviderV1 struct {
-	ctx    context.Context
-	client provider.StatusClient
+type Server interface {
+	ServeOn(context.Context, string) error
 }
 
-var _ providerv1.ProviderRPCServer = (*grpcProviderV1)(nil)
-
-func QueryClientFromCtx(ctx context.Context) ctypes.QueryClient {
-	val := ctx.Value(ContextKeyQueryClient)
-	if val == nil {
-		panic("context does not have pubsub set")
-	}
-
-	return val.(ctypes.QueryClient)
+type grpcServer struct {
+	*grpc.Server
 }
 
-func ContextWithOwner(ctx context.Context, address sdk.Address) context.Context {
-	return context.WithValue(ctx, ContextKeyOwner, address)
+type server struct {
+	ctx context.Context
+	pc  provider.Client
+	rc  cluster.ReadClient
+
+	certs             []tls.Certificate
+	providerClient    provider.Client
+	clusterReadClient cluster.ReadClient
+	ip                ip.Client
+
+	clusterSettings map[any]any
 }
 
-func OwnerFromCtx(ctx context.Context) sdk.Address {
-	val := ctx.Value(ContextKeyOwner)
-	if val == nil {
-		return sdk.AccAddress{}
-	}
-
-	return val.(sdk.Address)
-}
-
-func NewServer(ctx context.Context, endpoint string, certs []tls.Certificate, client provider.StatusClient) error {
-	// InsecureSkipVerify is set to true due to inability to use normal TLS verification
-	// certificate validation and authentication performed later in mtlsHandler
-	tlsConfig := &tls.Config{
-		Certificates:       certs,
-		ClientAuth:         tls.RequestClientCert,
-		InsecureSkipVerify: true, // nolint: gosec
-		MinVersion:         tls.VersionTLS13,
-	}
-
+func (s *grpcServer) ServeOn(ctx context.Context, addr string) error {
 	group, err := fromctx.ErrGroupFromCtx(ctx)
 	if err != nil {
 		return err
@@ -79,34 +60,21 @@ func NewServer(ctx context.Context, endpoint string, certs []tls.Certificate, cl
 
 	log := fromctx.LogcFromCtx(ctx)
 
-	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)), grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-		MinTime:             30 * time.Second,
-		PermitWithoutStream: false,
-	}), grpc.ChainUnaryInterceptor(mtlsInterceptor()))
-
-	pRPC := &grpcProviderV1{
-		ctx:    ctx,
-		client: client,
-	}
-
-	providerv1.RegisterProviderRPCServer(grpcSrv, pRPC)
-	gogoreflection.Register(grpcSrv)
-
 	group.Go(func() error {
-		grpcLis, err := net.Listen("tcp", endpoint)
+		grpcLis, err := net.Listen("tcp", addr)
 		if err != nil {
 			return err
 		}
 
-		log.Info(fmt.Sprintf("grpc listening on \"%s\"", endpoint))
+		log.Info(fmt.Sprintf("grpc listening on \"%s\"", addr))
 
-		return grpcSrv.Serve(grpcLis)
+		return s.Serve(grpcLis)
 	})
 
 	group.Go(func() error {
 		<-ctx.Done()
 
-		grpcSrv.GracefulStop()
+		s.GracefulStop()
 
 		return ctx.Err()
 	})
@@ -114,15 +82,88 @@ func NewServer(ctx context.Context, endpoint string, certs []tls.Certificate, cl
 	return nil
 }
 
-func mtlsInterceptor() grpc.UnaryServerInterceptor {
+type serverOpts struct {
+	certs             []tls.Certificate
+	providerClient    provider.Client
+	clusterReadClient cluster.ReadClient
+	clusterSettings   map[any]any
+	ipClient          ip.Client
+}
+
+type opt func(*serverOpts)
+
+func WithCerts(c []tls.Certificate) opt {
+	return func(so *serverOpts) { so.certs = c }
+}
+
+func WithProviderClient(c provider.Client) opt {
+	return func(so *serverOpts) { so.providerClient = c }
+}
+
+func WithClusterReadClient(c cluster.ReadClient) opt {
+	return func(so *serverOpts) { so.clusterReadClient = c }
+}
+
+func WithClusterSettings(s map[any]any) opt {
+	return func(so *serverOpts) { so.clusterSettings = s }
+}
+
+func WithIPClient(c ip.Client) opt {
+	return func(so *serverOpts) { so.ipClient = c }
+}
+
+func NewServer(ctx context.Context, opts ...opt) Server {
+	var o serverOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	// InsecureSkipVerify is set to true due to inability to use normal TLS verification
+	// certificate validation and authentication performed later in mtlsHandler
+	tlsConfig := &tls.Config{
+		Certificates:       o.certs,
+		ClientAuth:         tls.RequestClientCert,
+		InsecureSkipVerify: true, // nolint: gosec
+		MinVersion:         tls.VersionTLS13,
+	}
+
+	cquery := MustQueryClientFromCtx(ctx)
+
+	g := grpc.NewServer(
+		grpc.Creds(
+			credentials.NewTLS(tlsConfig),
+		),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             30 * time.Second,
+			PermitWithoutStream: false,
+		}),
+		grpc.ChainUnaryInterceptor(
+			mtlsInterceptor(cquery),
+		),
+	)
+
+	s := &server{
+		ctx:             ctx,
+		pc:              o.providerClient,
+		rc:              o.clusterReadClient,
+		clusterSettings: o.clusterSettings,
+		ip:              o.ipClient,
+	}
+
+	providerv1.RegisterProviderRPCServer(g, s)
+	leasev1.RegisterLeaseRPCServer(g, s)
+	gogoreflection.Register(g)
+
+	return &grpcServer{Server: g}
+}
+
+func mtlsInterceptor(cquery ctypes.QueryClient) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 		if p, ok := peer.FromContext(ctx); ok {
 			if mtls, ok := p.AuthInfo.(credentials.TLSInfo); ok {
 				certificates := mtls.State.PeerCertificates
 
 				if len(certificates) > 0 {
-					cquery := QueryClientFromCtx(ctx)
-
 					owner, _, err := atls.ValidatePeerCertificates(ctx, cquery, certificates, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 					if err != nil {
 						return nil, err
@@ -134,32 +175,5 @@ func mtlsInterceptor() grpc.UnaryServerInterceptor {
 		}
 
 		return handler(ctx, req)
-	}
-}
-
-func (gm *grpcProviderV1) GetStatus(ctx context.Context, _ *emptypb.Empty) (*providerv1.Status, error) {
-	return gm.client.StatusV1(ctx)
-}
-
-func (gm *grpcProviderV1) StreamStatus(_ *emptypb.Empty, stream providerv1.ProviderRPC_StreamStatusServer) error {
-	bus, err := fromctx.PubSubFromCtx(gm.ctx)
-	if err != nil {
-		return err
-	}
-
-	events := bus.Sub(ptypes.PubSubTopicProviderStatus)
-
-	for {
-		select {
-		case <-gm.ctx.Done():
-			return gm.ctx.Err()
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case evt := <-events:
-			val := evt.(providerv1.Status)
-			if err := stream.Send(&val); err != nil {
-				return err
-			}
-		}
 	}
 }

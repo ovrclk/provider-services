@@ -21,9 +21,7 @@ import (
 	gwrest "github.com/akash-network/provider/gateway/rest"
 )
 
-var (
-	errSubmitManifestFailed = errors.New("submit manifest to some providers has been failed")
-)
+var errSubmitManifestFailed = errors.New("submit manifest to some providers has been failed")
 
 // SendManifestCmd looks up the Providers blockchain information,
 // and POSTs the SDL file to the Gateway address.
@@ -146,7 +144,6 @@ func doSendManifest(cmd *cobra.Command, sdlpath string) error {
 	}
 
 	_, err = fmt.Fprint(cmd.OutOrStdout(), buf.String())
-
 	if err != nil {
 		return err
 	}
@@ -157,3 +154,4 @@ func doSendManifest(cmd *cobra.Command, sdlpath string) error {
 
 	return nil
 }
+
